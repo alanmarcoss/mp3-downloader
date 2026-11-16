@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@distube/ytdl-core": "^4.16.12",
+    "@distube/ytdl-core": "^5.2.1",
     "@nuxtjs/color-mode": "^3.5.2",
     "@vercel/blob": "^1.1.1",
     "@vueuse/core": "^13.1.0",
@@ -31,7 +31,7 @@
     "vue": "^3.5.13",
     "vue-router": "^4.5.0",
     "vue-sonner": "^1.3.1",
-    "youtubei.js": "^13.4.0"
+    "youtubei.js": "^18.3.0"
   },
   "devDependencies": {
     "@nuxtjs/tailwindcss": "^6.13.2",

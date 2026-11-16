@@ -2,44 +2,107 @@ import { spawn } from 'node:child_process'
 import { createWriteStream, promises as fs } from 'node:fs'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import ytdl from '@distube/ytdl-core'
-import { Innertube, UniversalCache } from 'youtubei.js'
+import { Ytdl } from '@distube/ytdl-core'
+import { Innertube, Platform, UniversalCache } from 'youtubei.js'
 import { ProxyAgent, fetch as undiciFetch } from 'undici'
 
-interface CookieItem {
+// Enable YouTube player JS signature/n-token evaluation for youtubei.js Web/YTMusic clients
+if (Platform?.shim) {
+  Platform.shim.eval = async (data: { output: string }, env: Record<string, any>) => {
+    const properties: string[] = []
+    if (env.n) properties.push(`n: exportedVars.nFunction("${env.n}")`)
+    if (env.sig) properties.push(`sig: exportedVars.sigFunction("${env.sig}")`)
+    const code = `${data.output}\nreturn { ${properties.join(', ')} }`
+    return new Function(code)()
+  }
+}
+
+export interface CookieItem {
   name: string
   value: string
   domain?: string
   path?: string
 }
 
-function parseYouTubeCookies(raw: string): { list: CookieItem[], header: string } {
-  const trimmed = raw.trim()
-  if (!trimmed) return { list: [], header: '' }
-
-  // Support EditThisCookie / Cookie-Editor JSON array format
-  if (trimmed.startsWith('[')) {
+function tryDecodeBase64(input: string): string {
+  // Only decode if single-line base64 without raw ';', '[', or tabs
+  if (/^[A-Za-z0-9+/=_-]{32,}$/.test(input) && !input.includes(';')) {
     try {
-      const parsed = JSON.parse(trimmed) as Array<Record<string, any>>
+      const decoded = Buffer.from(input, 'base64').toString('utf8').trim()
+      if (
+        decoded.startsWith('[') ||
+        decoded.includes('youtube.com') ||
+        decoded.includes('SID=') ||
+        decoded.includes('VISITOR_INFO')
+      ) {
+        return decoded
+      }
+    }
+    catch {
+      // keep raw
+    }
+  }
+  return input
+}
+
+export function parseYouTubeCookies(rawInput: string): { list: CookieItem[], header: string } {
+  const raw = tryDecodeBase64(rawInput.trim())
+  if (!raw) return { list: [], header: '' }
+
+  // 1. Cookie-Editor / EditThisCookie JSON array format
+  if (raw.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw) as Array<Record<string, any>>
       const list: CookieItem[] = parsed
-        .filter(c => c && typeof c.name === 'string' && typeof c.value === 'string')
+        .filter(c => c && typeof c.name === 'string' && typeof c.value === 'string' && c.name.trim())
         .map(c => ({
-          name: c.name,
+          name: c.name.trim(),
           value: c.value,
           domain: c.domain || '.youtube.com',
           path: c.path || '/',
         }))
-      const header = list.map(c => `${c.name}=${c.value}`).join('; ')
-      return { list, header }
+      return {
+        list,
+        header: list.map(c => `${c.name}=${c.value}`).join('; '),
+      }
     }
     catch {
       // fall through
     }
   }
 
-  // Support raw "NAME=VALUE; NAME2=VALUE2" header string
+  // 2. Netscape cookies.txt format (tab-separated 7 columns)
+  if (raw.includes('\t') || raw.startsWith('# Netscape')) {
+    const list: CookieItem[] = []
+    for (const rawLine of raw.split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (!line || (line.startsWith('#') && !line.startsWith('#HttpOnly_'))) continue
+      const cleanLine = line.replace(/^#HttpOnly_/, '')
+      const cols = cleanLine.split('\t')
+      if (cols.length >= 7) {
+        const [domain, , cookiePath, , , name, value] = cols
+        if (name && (domain.includes('youtube.com') || domain.includes('google.com'))) {
+          list.push({
+            name: name.trim(),
+            value: (value ?? '').trim(),
+            domain: domain.trim(),
+            path: cookiePath?.trim() || '/',
+          })
+        }
+      }
+    }
+    if (list.length > 0) {
+      return {
+        list,
+        header: list.map(c => `${c.name}=${c.value}`).join('; '),
+      }
+    }
+  }
+
+  // 3. Raw "NAME=VALUE; NAME2=VALUE2" Cookie header string
+  const strippedPrefix = raw.replace(/^cookie\s*:\s*/i, '')
   const list: CookieItem[] = []
-  for (const part of trimmed.split(';')) {
+  for (const part of strippedPrefix.split(';')) {
     const eqIdx = part.indexOf('=')
     if (eqIdx > 0) {
       const name = part.slice(0, eqIdx).trim()
@@ -50,7 +113,10 @@ function parseYouTubeCookies(raw: string): { list: CookieItem[], header: string 
     }
   }
 
-  return { list, header: list.map(c => `${c.name}=${c.value}`).join('; ') }
+  return {
+    list,
+    header: list.map(c => `${c.name}=${c.value}`).join('; '),
+  }
 }
 
 function getYouTubeRuntimeAuth() {
@@ -59,26 +125,21 @@ function getYouTubeRuntimeAuth() {
   const rawCookies = (config.youtubeCookies || process.env.YOUTUBE_COOKIES || '').trim()
   const cookies = parseYouTubeCookies(rawCookies)
 
-  let ytdlAgent: any = undefined
-  try {
-    if (proxy) {
-      ytdlAgent = ytdl.createProxyAgent(
-        { uri: proxy },
-        cookies.list.length > 0 ? cookies.list : undefined,
-      )
-    }
-    else if (cookies.list.length > 0) {
-      ytdlAgent = ytdl.createAgent(cookies.list)
-    }
-  }
-  catch {
-    ytdlAgent = undefined
-  }
+  const dispatcher = proxy ? new ProxyAgent(proxy) : undefined
+  const customFetch: typeof fetch | undefined = dispatcher
+    ? ((input: any, init?: any) => undiciFetch(input, { ...init, dispatcher }) as any)
+    : undefined
+
+  const ytdlClient = new Ytdl({
+    cookie: cookies.header || undefined,
+    fetch: customFetch,
+  })
 
   return {
     proxy,
     cookies,
-    ytdlAgent,
+    customFetch,
+    ytdlClient,
   }
 }
 
@@ -100,13 +161,11 @@ function cleanYouTubeTitleAndArtist(rawTitle: string, channelName: string) {
 }
 
 export async function inspectYouTubeTrack(videoId: string, canonicalUrl: string) {
-  const { ytdlAgent } = getYouTubeRuntimeAuth()
+  const { ytdlClient } = getYouTubeRuntimeAuth()
   const fallbackThumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
 
   try {
-    const info = await ytdl.getBasicInfo(canonicalUrl, {
-      agent: ytdlAgent,
-    })
+    const info = await ytdlClient.getInfo(canonicalUrl)
     const details = info.videoDetails
     const { title, artist } = cleanYouTubeTitleAndArtist(
       details.title || 'Untitled Track',
@@ -152,11 +211,11 @@ async function tryDownloadViaYtdlCore(
   destPath: string,
   maxDurationSeconds: number,
 ) {
-  const { ytdlAgent } = getYouTubeRuntimeAuth()
-  const info = await ytdl.getInfo(canonicalUrl, { agent: ytdlAgent })
+  const { ytdlClient } = getYouTubeRuntimeAuth()
+  const info = await ytdlClient.getInfo(canonicalUrl)
   const details = info.videoDetails
 
-  if (details.isLiveContent) {
+  if (details.isLive) {
     throw createError({
       statusCode: 400,
       statusMessage: 'Live streams cannot be converted to MP3.',
@@ -171,10 +230,9 @@ async function tryDownloadViaYtdlCore(
     })
   }
 
-  const audioStream = ytdl.downloadFromInfo(info, {
+  const audioStream = ytdlClient.download(info, {
     quality: 'highestaudio',
-    filter: 'audioonly',
-    agent: ytdlAgent,
+    filter: [{ hasAudio: true, hasVideo: false }, { hasAudio: true }],
     highWaterMark: 1 << 24,
   })
 
@@ -203,16 +261,14 @@ async function tryDownloadViaInnertube(
   destPath: string,
   maxDurationSeconds: number,
 ) {
-  const { proxy, cookies } = getYouTubeRuntimeAuth()
-  const dispatcher = proxy ? new ProxyAgent(proxy) : undefined
+  const { cookies, customFetch } = getYouTubeRuntimeAuth()
+  const hasCookies = Boolean(cookies.header)
 
   const yt = await Innertube.create({
     cache: new UniversalCache(false),
     generate_session_locally: true,
     cookie: cookies.header || undefined,
-    fetch: dispatcher
-      ? (input: any, init?: any) => undiciFetch(input, { ...init, dispatcher }) as any
-      : undefined,
+    fetch: customFetch,
   })
 
   const basic = await yt.getBasicInfo(videoId)
@@ -232,16 +288,14 @@ async function tryDownloadViaInnertube(
     })
   }
 
-  const clientsToTry: Array<'IOS' | 'ANDROID' | 'TV_EMBEDDED' | 'YTMUSIC'> = [
-    'IOS',
-    'ANDROID',
-    'YTMUSIC',
-    'TV_EMBEDDED',
-  ]
+  const clientsToTry: string[] = hasCookies
+    ? ['YTMUSIC', 'WEB', 'MWEB', 'TV_EMBEDDED', 'IOS', 'ANDROID']
+    : ['IOS', 'ANDROID', 'YTMUSIC', 'TV_EMBEDDED', 'WEB']
 
   let lastErr: any = null
   for (const client of clientsToTry) {
     try {
+      await fs.rm(destPath, { force: true }).catch(() => {})
       const webStream = await yt.download(videoId, {
         type: 'audio',
         quality: 'best',
@@ -373,7 +427,7 @@ export async function downloadYouTubeRawAudio(
 ) {
   const errors: string[] = []
 
-  // Strategy 1: @distube/ytdl-core
+  // Strategy 1: @distube/ytdl-core v5 (built-in PO token minting, SABR, multi-client, cookies & proxy)
   try {
     return await tryDownloadViaYtdlCore(videoId, canonicalUrl, destPath, maxDurationSeconds)
   }
@@ -382,7 +436,7 @@ export async function downloadYouTubeRawAudio(
     errors.push(`ytdl-core: ${err?.message || String(err)}`)
   }
 
-  // Strategy 2: youtubei.js (Innertube multi-client)
+  // Strategy 2: youtubei.js v18 (Innertube multi-client + cookie/proxy support)
   try {
     await fs.rm(destPath, { force: true }).catch(() => {})
     return await tryDownloadViaInnertube(videoId, destPath, maxDurationSeconds)
@@ -403,7 +457,7 @@ export async function downloadYouTubeRawAudio(
   }
 
   const combined = errors.join(' | ')
-  const isBotBlock = /bot|sign in|403|429|confirm/i.test(combined)
+  const isBotBlock = /bot|sign in|login_required|403|429|confirm/i.test(combined)
 
   throw createError({
     statusCode: 502,
