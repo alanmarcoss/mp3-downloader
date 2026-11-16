@@ -1,11 +1,14 @@
 import { promises as fs } from 'node:fs'
 import { createReadStream } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { del, list, put } from '@vercel/blob'
 import type { AudioBitrate, Provider, TrackMetadata } from '~/types/track'
 import { assertValidCacheKey } from '~/server/utils/cacheKey'
 
-const LOCAL_CACHE_ROOT = path.resolve(process.cwd(), '.data', 'cache', 'tracks')
+const LOCAL_CACHE_ROOT = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
+  ? path.join(os.tmpdir(), 'wavelength-cache', 'tracks')
+  : path.resolve(process.cwd(), '.data', 'cache', 'tracks')
 
 export function getStorageConfig() {
   const config = useRuntimeConfig()

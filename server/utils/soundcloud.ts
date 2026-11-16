@@ -84,6 +84,7 @@ interface SoundCloudTrackObject {
   artwork_url?: string | null
   permalink_url: string
   policy?: string
+  track_authorization?: string
   user?: {
     username?: string
     avatar_url?: string | null
@@ -181,6 +182,37 @@ export async function inspectSoundCloudTrack(canonicalUrl: string) {
   return normalizeSoundCloudMetadata(track)
 }
 
+function scoreTranscoding(t: SoundCloudTranscoding): number {
+  const protocol = t.format?.protocol || ''
+  const mime = (t.format?.mime_type || '').toLowerCase().split(';')[0].trim()
+  const preset = (t.preset || '').toLowerCase()
+  const snipPenalty = t.snipped ? -500 : 0
+
+  // Deprioritize broken/deprecated SoundCloud master mpegurl ("abr_sq") endpoints which frequently 404
+  if (mime === 'audio/mpegurl' || preset === 'abr_sq') {
+    return -100 + snipPenalty
+  }
+  if (protocol === 'progressive' && mime === 'audio/mpeg') {
+    return 100 + snipPenalty
+  }
+  if (protocol === 'progressive') {
+    return 90 + snipPenalty
+  }
+  if (preset.includes('160k') || preset.includes('hq')) {
+    return 85 + snipPenalty
+  }
+  if (protocol === 'hls' && mime === 'audio/mpeg') {
+    return 80 + snipPenalty
+  }
+  if (protocol === 'hls' && mime === 'audio/ogg') {
+    return 75 + snipPenalty
+  }
+  if (protocol === 'hls' && mime === 'audio/mp4') {
+    return 70 + snipPenalty
+  }
+  return 50 + snipPenalty
+}
+
 export async function downloadSoundCloudRawAudio(
   canonicalUrl: string,
   destPath: string,
@@ -204,33 +236,52 @@ export async function downloadSoundCloudRawAudio(
     })
   }
 
-  // Prefer progressive audio/mpeg first, then HLS audio/mpeg, then any HLS stream
-  const chosen =
-    transcodings.find(t => t.format?.protocol === 'progressive' && t.format?.mime_type?.includes('audio/mpeg')) ||
-    transcodings.find(t => t.format?.protocol === 'progressive') ||
-    transcodings.find(t => t.format?.protocol === 'hls' && t.format?.mime_type?.includes('audio/mpeg')) ||
-    transcodings[0]
+  // Sort transcodings best-first and try each in order if one returns 404/error
+  const ranked = [...transcodings].sort((a, b) => scoreTranscoding(b) - scoreTranscoding(a))
 
-  const streamInfoUrl = new URL(chosen.url)
-  streamInfoUrl.searchParams.set('client_id', clientId)
+  let chosen: SoundCloudTranscoding | null = null
+  let mediaUrl = ''
+  let lastStatus = 0
 
-  const streamInfoRes = await fetch(streamInfoUrl.toString(), {
-    headers: { 'User-Agent': BROWSER_UA },
-    signal: AbortSignal.timeout(10000),
-  })
+  for (const candidate of ranked) {
+    try {
+      const streamInfoUrl = new URL(candidate.url)
+      streamInfoUrl.searchParams.set('client_id', clientId)
+      if (track.track_authorization) {
+        streamInfoUrl.searchParams.set('track_authorization', track.track_authorization)
+      }
 
-  if (!streamInfoRes.ok) {
-    throw createError({
-      statusCode: 502,
-      statusMessage: `Failed to resolve SoundCloud audio stream (${streamInfoRes.status}).`,
-    })
+      const streamInfoRes = await fetch(streamInfoUrl.toString(), {
+        headers: {
+          'User-Agent': BROWSER_UA,
+          'Accept': 'application/json',
+          'Origin': 'https://soundcloud.com',
+          'Referer': 'https://soundcloud.com/',
+        },
+        signal: AbortSignal.timeout(10000),
+      })
+
+      lastStatus = streamInfoRes.status
+      if (!streamInfoRes.ok) {
+        continue
+      }
+
+      const payload = (await streamInfoRes.json()) as { url?: string }
+      if (payload?.url) {
+        chosen = candidate
+        mediaUrl = payload.url
+        break
+      }
+    }
+    catch {
+      // Try next candidate transcoding
+    }
   }
 
-  const { url: mediaUrl } = (await streamInfoRes.json()) as { url?: string }
-  if (!mediaUrl) {
+  if (!chosen || !mediaUrl) {
     throw createError({
       statusCode: 502,
-      statusMessage: 'SoundCloud did not return a valid media URL.',
+      statusMessage: `Failed to resolve SoundCloud audio stream (${lastStatus || 'no valid transcoding'}).`,
     })
   }
 

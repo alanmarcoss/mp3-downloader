@@ -113,6 +113,89 @@ describe('server/utils/soundcloud', () => {
     }
   })
 
+  it('skips 404 abr_sq (audio/mpegurl) transcodings, passes track_authorization, and falls back to working aac_160k HLS', async () => {
+    const requestedStreamUrls: string[] = []
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/resolve?')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: 293,
+              kind: 'track',
+              title: 'Flickermood',
+              duration: 240_000,
+              track_authorization: 'jwt_track_auth_token',
+              permalink_url: 'https://soundcloud.com/forss/flickermood',
+              user: { username: 'Forss' },
+              media: {
+                transcodings: [
+                  {
+                    url: 'https://api-v2.soundcloud.com/media/abr_sq/stream/hls',
+                    preset: 'abr_sq',
+                    duration: 240_000,
+                    format: { protocol: 'hls', mime_type: 'audio/mpegurl' },
+                  },
+                  {
+                    url: 'https://api-v2.soundcloud.com/media/dead_prog/stream/progressive',
+                    preset: 'mp3_1_0',
+                    duration: 240_000,
+                    format: { protocol: 'progressive', mime_type: 'audio/mpeg' },
+                  },
+                  {
+                    url: 'https://api-v2.soundcloud.com/media/aac_160k/stream/hls',
+                    preset: 'aac_160k',
+                    duration: 240_000,
+                    format: { protocol: 'hls', mime_type: 'audio/mp4; codecs="mp4a.40.2"' },
+                  },
+                ],
+              },
+            }),
+          }
+        }
+        if (url.includes('/stream/')) {
+          requestedStreamUrls.push(url)
+          if (url.includes('dead_prog') || url.includes('abr_sq')) {
+            return { ok: false, status: 404 }
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ url: 'https://cf-hls.sndcdn.com/fmp4.m3u8' }),
+          }
+        }
+        if (url.includes('fmp4.m3u8')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:10.0,\ndata000.m4s\n#EXT-X-ENDLIST',
+          }
+        }
+        if (url.endsWith('init.mp4')) {
+          return { ok: true, status: 200, arrayBuffer: async () => Buffer.from('INIT-') }
+        }
+        if (url.endsWith('data000.m4s')) {
+          return { ok: true, status: 200, arrayBuffer: async () => Buffer.from('M4S') }
+        }
+        throw new Error(`Unexpected URL: ${url}`)
+      }),
+    )
+
+    const dest = path.join(os.tmpdir(), `sc-fallback-${Date.now()}.m4a`)
+    try {
+      await downloadSoundCloudRawAudio('https://soundcloud.com/forss/flickermood', dest, 3600)
+      expect(await fs.readFile(dest, 'utf8')).toBe('INIT-M4S')
+      expect(requestedStreamUrls.every(u => u.includes('track_authorization=jwt_track_auth_token'))).toBe(true)
+    }
+    finally {
+      await fs.rm(dest, { force: true }).catch(() => {})
+    }
+  })
+
   it('rejects tracks exceeding maxDurationSeconds', async () => {
     vi.stubGlobal(
       'fetch',
