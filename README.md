@@ -1,27 +1,35 @@
 # Wavelength — YouTube & SoundCloud MP3 Downloader
 
-A modern **Nuxt 3 + shadcn-vue** web app built for hosting on **Vercel** (on your own subdomain) that converts **YouTube** and **SoundCloud** tracks into tagged high-bitrate MP3s with embedded cover art and **24-hour cloud caching**.
+A **Nuxt 3 + shadcn-vue** web app designed for **Vercel** custom subdomain hosting that converts **YouTube** and **SoundCloud** tracks into high-bitrate MP3s with embedded cover art and **24-hour caching**.
 
 ---
 
-## Features (v1)
+## Architecture & Infrastructure
 
-- **YouTube & SoundCloud Support**:
-  - **YouTube**: Standard videos (`youtube.com/watch?v=...`), short links (`youtu.be/...`), YouTube Music (`music.youtube.com`), and Shorts, using a multi-tier extraction pipeline (`@distube/ytdl-core` → `youtubei.js` Innertube clients → local `yt-dlp` fallback in dev).
-  - **SoundCloud**: Full track URLs, mobile share shortlinks (`on.soundcloud.com/...`), progressive MP3 streams, and HLS segment assembly with automatic `client_id` discovery.
-- **Studio-Grade MP3 Output**:
-  - Selectable **128 kbps**, **192 kbps**, or **320 kbps** (`libmp3lame` via `ffmpeg-static`).
-  - Automatic **ID3v2.3 tags** (`Title`, `Artist`) and embedded **Front Cover Art** (`APIC`).
-- **Smart 24-Hour Caching Strategy**:
-  - Bypasses Vercel Serverless Functions' 4.5 MB response payload limit by storing converted MP3s directly in **Vercel Blob** (`tracks/<provider>-<id>-<bitrate>/`).
-  - **Server-side URL deduplication**: Re-requesting the same track + bitrate within 24 hours returns an **instant cache hit** in ~100ms without re-downloading or re-transcoding.
-  - **Triple-layer 24h expiration**:
-    1. **Read-time TTL check**: Expired blobs (`>= 24h`) are ignored and purged immediately on lookup.
-    2. **Opportunistic background cleanup**: Uses `event.waitUntil()` after conversions to prune expired blobs without slowing responses.
-    3. **Scheduled Vercel Cron (`/api/cron/cleanup`)**: Runs daily (`0 4 * * *` in `vercel.json` — compatible with both **Vercel Hobby** and **Pro** plans) to guarantee zero orphaned files.
-  - **Zero-config Local Dev Fallback**: When `BLOB_READ_WRITE_TOKEN` is unset locally, files are cached in `.data/cache/tracks/` with full HTTP `Range` streaming support.
-- **Polished `shadcn-vue` Interface**:
-  - Auto-detects platform badges as you paste, previews track metadata before converting, includes an inline audio scrubber preview, copies shareable 24-hour direct MP3 links, and maintains a per-browser **24-Hour Download Vault** with live expiry countdowns.
+### Stack
+- **Frontend**: Nuxt 3, Vue 3, Tailwind CSS, `shadcn-vue` (`reka-ui`), `@nuxtjs/color-mode`, `@vueuse/core`.
+- **Server Runtime**: Nitro Serverless Functions on Vercel (`maxDuration: 60s`, `memory: 1024 MB`, uncompressed bundle ~59 MB including `ffmpeg-static`).
+- **Audio Transcoding & Tagging**: `ffmpeg-static` (`libmp3lame` at `128` / `192` / `320 kbps`, 44.1 kHz) with embedded **ID3v2.3** `Title`, `Artist`, and scaled `MJPEG` front cover art (`APIC`).
+- **Object Storage / CDN**: `@vercel/blob` (with automatic local `.data/cache/` disk fallback in local dev and `/tmp/wavelength-cache/` fallback on serverless if `BLOB_READ_WRITE_TOKEN` is not yet configured).
+
+### Extraction Pipeline
+- **YouTube (`server/utils/youtube.ts`)**:
+  1. `@distube/ytdl-core` (with optional `YOUTUBE_COOKIES` and `YOUTUBE_PROXY` agent support).
+  2. `youtubei.js` Innertube multi-client fallback (`IOS`, `ANDROID`, `YTMUSIC`, `TV_EMBEDDED`).
+  3. Optional local `yt-dlp` binary fallback when running in local dev or Docker.
+  4. Fast oEmbed fallback (`/oembed`) for instant metadata previews when rate-limited.
+- **SoundCloud (`server/utils/soundcloud.ts`)**:
+  - Automatic `client_id` discovery and caching from SoundCloud's web JS bundles (`a-v2.sndcdn.com/assets/*.js`) with auto-refresh on `401`/`403`.
+  - Shortlink expansion (`on.soundcloud.com`, `snd.sc`) and private secret-token (`/s-xxxxx`) preservation.
+  - Ranked transcoding fallback across progressive MP3 and HLS (`aac_160k` fMP4 `#EXT-X-MAP` + `.m4s` segment assembly, MP3 HLS, Opus) with `track_authorization` support.
+
+### 24-Hour Cache Strategy
+1. **Bypasses Vercel's 4.5 MB HTTP Payload Limit**: Serverless functions transcode in `/tmp` and upload directly to **Vercel Blob** (`tracks/<cacheKey>/`), serving inline audio previews (`streamUrl`) and file downloads (`?download=1`) directly from Vercel's global CDN.
+2. **Canonical Deduplication**: Different URL forms for the same track + bitrate resolve to one deterministic cache key (`yt-<videoId>-<bitrate>` or `sc-<sha256(canonicalUrl)>-<bitrate>`). Repeat requests within 24 hours return an instant cache hit without re-downloading or re-transcoding, and concurrent identical requests share a single in-flight promise.
+3. **Triple-Layer 24h Expiration**:
+   - **Read-time TTL check**: Entries with `Date.now() >= expiresAt` are rejected and deleted immediately on lookup.
+   - **Opportunistic background prune**: `/api/extract` schedules `event.waitUntil(cleanupExpiredTracks())` non-blockingly after conversions.
+   - **Daily Vercel Cron (`/api/cron/cleanup`)**: Configured at `0 4 * * *` in `vercel.json` (compatible with both **Vercel Hobby** and **Pro** plans) and protected by `Authorization: Bearer <CRON_SECRET>`.
 
 ---
 
@@ -32,34 +40,34 @@ npm install
 npm run dev
 ```
 
-Run the automated test suite & TypeScript check:
+Open `http://localhost:3000`. When `BLOB_READ_WRITE_TOKEN` is unset locally, `.data/cache/tracks/` is used automatically with HTTP `Range` streaming support via `/api/files/[key]`.
+
+### Testing & Type Checking
 
 ```bash
-npm test
-npm run typecheck
+npm test            # Run Vitest unit & integration suite
+npm run test:watch  # Watch mode
+npm run typecheck   # TypeScript verification
 ```
-
-Open `http://localhost:3000`. No cloud credentials are required locally — `.data/cache/` is used automatically until `BLOB_READ_WRITE_TOKEN` is set.
 
 ---
 
 ## Deploying to Vercel + Custom Subdomain
 
 1. **Import Repository into Vercel**
-   - Push this repo to GitHub/GitLab/Bitbucket and import it into [Vercel](https://vercel.com/new).
-   - Framework Preset: **Nuxt.js** (auto-detected).
+   - Import the GitHub repository into [Vercel](https://vercel.com/new) (Framework Preset: **Nuxt.js**).
 
-2. **Attach Vercel Blob Storage (1-Click)**
-   - In your Vercel project dashboard, open **Storage → Create Database → Blob** (Public store).
-   - Connect it to your project — Vercel automatically injects `BLOB_READ_WRITE_TOKEN`.
+2. **Attach Vercel Blob Storage**
+   - In your Vercel project dashboard, go to **Storage → Create Database → Blob** (Public store) and connect it to the project. Vercel automatically injects `BLOB_READ_WRITE_TOKEN`.
 
-3. **Set Optional Environment Variables**
-   - `CRON_SECRET`: Any random secret string (Vercel automatically sends `Authorization: Bearer <CRON_SECRET>` when triggering `/api/cron/cleanup`).
-   - `YOUTUBE_COOKIES` / `YOUTUBE_PROXY` *(optional)*: Datacenter IPs (AWS/Vercel) can occasionally trigger YouTube's *"Sign in to confirm you're not a bot"* prompt. Providing browser cookies (JSON array from Cookie-Editor or raw `Cookie` header string) or an HTTP proxy URL resolves datacenter rate limits.
+3. **Environment Variables (`.env.example`)**
+   - `BLOB_READ_WRITE_TOKEN`: Auto-populated by Vercel Blob.
+   - `CRON_SECRET`: Random secret string verified by `/api/cron/cleanup`.
+   - `CACHE_TTL_HOURS`: Defaults to `24`.
+   - `MAX_DURATION_SECONDS`: Defaults to `3600` (60 minutes).
+   - `YOUTUBE_COOKIES` / `YOUTUBE_PROXY` *(optional)*: Browser cookies (JSON array or raw `Cookie` header) or proxy URL if Vercel datacenter IPs hit YouTube bot checks.
+   - `SOUNDCLOUD_CLIENT_ID` *(optional)*: Overrides automatic `client_id` discovery.
 
-4. **Point Your Subdomain**
-   - Go to **Project Settings → Domains** in Vercel and add your subdomain (e.g., `mp3.yourdomain.com`).
-   - In your DNS provider, add the `CNAME` record shown by Vercel:
-     - **Type**: `CNAME`
-     - **Name**: `mp3` (or your chosen subdomain)
-     - **Value**: `cname.vercel-dns.com`
+4. **Custom Subdomain Setup**
+   - Add your subdomain (e.g. `mp3.yourdomain.com`) under **Project Settings → Domains** in Vercel.
+   - Add a `CNAME` DNS record for your subdomain pointing to `cname.vercel-dns.com`.

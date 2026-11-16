@@ -47,7 +47,7 @@ describe('UI Components & Vault Composable', () => {
     expect(scCompact.find('svg').exists()).toBe(true)
   })
 
-  it('renders ActiveTrackCard with metadata, Instant Cache Hit badge, countdown, and download anchor', () => {
+  it('renders ActiveTrackCard with metadata, Instant badge, countdown, and download anchor', () => {
     const wrapper = mount(ActiveTrackCard, {
       props: {
         track: sampleTrack,
@@ -62,7 +62,7 @@ describe('UI Components & Vault Composable', () => {
     expect(wrapper.text()).toContain('Veridis Quo')
     expect(wrapper.text()).toContain('Daft Punk')
     expect(wrapper.text()).toContain('320 kbps MP3')
-    expect(wrapper.text()).toContain('Instant Cache Hit')
+    expect(wrapper.text()).toContain('Instant')
     expect(wrapper.text()).toContain('23h 59m left')
 
     const downloadAnchor = wrapper.find('a[download]')

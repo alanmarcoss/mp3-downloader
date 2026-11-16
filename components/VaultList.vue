@@ -63,10 +63,10 @@ function handleRemove(cacheKey: string) {
         </div>
         <div>
           <h2 class="text-sm font-semibold tracking-tight">
-            24-Hour Download Vault
+            Recent Downloads
           </h2>
           <p class="text-xs text-muted-foreground">
-            Saved in this browser · Cached MP3s auto-purge from cloud storage after 24 hours
+            Available for 24 hours
           </p>
         </div>
       </div>
@@ -104,10 +104,10 @@ function handleRemove(cacheKey: string) {
           <Music2 class="h-5 w-5" />
         </div>
         <p class="text-sm font-medium">
-          {{ items.length === 0 ? 'Your 24-hour vault is empty' : `No ${filterTab} downloads yet` }}
+          {{ items.length === 0 ? 'No recent downloads' : `No ${filterTab} downloads yet` }}
         </p>
         <p class="mt-1 max-w-sm text-xs text-muted-foreground">
-          Paste any YouTube or SoundCloud track link above. Converted MP3s remain ready for instant re-download across devices for 24 hours.
+          Tracks you convert will appear here so you can preview or download them again anytime within 24 hours.
         </p>
       </CardContent>
     </Card>
@@ -172,7 +172,7 @@ function handleRemove(cacheKey: string) {
             variant="outline"
             class="border-amber-500/30 bg-amber-500/10 font-mono text-[11px] text-amber-600 dark:text-amber-400"
           >
-            Expired (24h)
+            Expired
           </Badge>
           <Badge
             v-else
@@ -189,7 +189,7 @@ function handleRemove(cacheKey: string) {
                 variant="ghost"
                 size="icon"
                 class="h-8 w-8"
-                title="Copy 24h link"
+                title="Copy link"
                 @click="copyTrackLink(track)"
               >
                 <Copy class="h-3.5 w-3.5" />
@@ -217,7 +217,7 @@ function handleRemove(cacheKey: string) {
               @click="emit('recache', track)"
             >
               <RefreshCw class="h-3.5 w-3.5" :class="busyKey === track.cacheKey ? 'animate-spin' : ''" />
-              Re-cache
+              Convert again
             </Button>
 
             <Button

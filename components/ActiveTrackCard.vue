@@ -53,7 +53,7 @@ async function copyShareUrl() {
       : `${window.location.origin}${props.track.downloadUrl}`
     await navigator.clipboard.writeText(absoluteUrl)
     copied.value = true
-    toast.success('24-hour direct MP3 link copied to clipboard')
+    toast.success('Download link copied to clipboard')
     setTimeout(() => {
       copied.value = false
     }, 2000)
@@ -106,7 +106,7 @@ async function copyShareUrl() {
             class="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
           >
             <Zap class="h-3 w-3" />
-            Instant Cache Hit
+            Instant
           </Badge>
           <Badge
             variant="outline"
@@ -157,7 +157,7 @@ async function copyShareUrl() {
           <Button variant="outline" size="default" @click="copyShareUrl">
             <Check v-if="copied" class="h-4 w-4 text-emerald-500" />
             <Share2 v-else class="h-4 w-4" />
-            {{ copied ? 'Copied Link' : 'Copy 24h Link' }}
+            {{ copied ? 'Copied' : 'Copy Link' }}
           </Button>
 
           <Button

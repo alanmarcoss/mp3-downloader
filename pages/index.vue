@@ -4,12 +4,9 @@ import {
   AlertCircle,
   AudioWaveform,
   ClipboardPaste,
-  Cloud,
   Download,
-  HardDrive,
   Loader2,
   Moon,
-  Sparkles,
   Sun,
   X,
   Zap,
@@ -23,8 +20,6 @@ const colorMode = useColorMode()
 const {
   items: vaultItems,
   now,
-  storageMode,
-  ttlHours,
   isTrackExpired,
   upsertTrack,
   removeTrack,
@@ -57,21 +52,21 @@ let progressTimer: ReturnType<typeof setInterval> | null = null
 
 function startProgressSimulation() {
   progressValue.value = 12
-  progressStage.value = 'Resolving source audio stream...'
+  progressStage.value = 'Fetching track...'
   if (progressTimer) clearInterval(progressTimer)
 
   progressTimer = setInterval(() => {
     if (progressValue.value < 45) {
       progressValue.value += 7
-      progressStage.value = 'Downloading highest-quality audio stream...'
+      progressStage.value = 'Downloading audio...'
     }
     else if (progressValue.value < 78) {
       progressValue.value += 5
-      progressStage.value = `Transcoding to ${selectedBitrateNum.value} kbps MP3 & embedding ID3 cover art...`
+      progressStage.value = `Converting to ${selectedBitrateNum.value} kbps MP3...`
     }
     else if (progressValue.value < 92) {
       progressValue.value += 2
-      progressStage.value = `Uploading MP3 to ${ttlHours.value}h cloud cache...`
+      progressStage.value = 'Preparing file...'
     }
   }, 600)
 }
@@ -199,8 +194,8 @@ async function handleExtract(customUrl?: string, customBitrate?: AudioBitrate, f
 
     toast.success(
       response.cached
-        ? 'Instant 24h cache hit — MP3 ready!'
-        : `Converted "${response.track.title}" to ${response.track.bitrate} kbps MP3`,
+        ? 'MP3 ready!'
+        : `"${response.track.title}" is ready`,
     )
 
     if (autoDownload.value) {
@@ -257,58 +252,35 @@ onMounted(() => {
             <AudioWaveform class="h-4 w-4" />
           </div>
           <span class="text-sm font-semibold tracking-tight">Wavelength</span>
-          <Badge variant="secondary" class="hidden font-mono text-[10px] sm:inline-flex">
-            v1.0
-          </Badge>
         </div>
 
-        <div class="flex items-center gap-2">
-          <Badge
-            variant="outline"
-            class="gap-1.5 font-mono text-[11px] text-muted-foreground"
-            :title="
-              storageMode === 'vercel-blob'
-                ? 'Connected to Vercel Blob CDN with 24h expiration'
-                : 'Using local disk fallback (.data/cache). Add BLOB_READ_WRITE_TOKEN on Vercel.'
-            "
-          >
-            <Cloud v-if="storageMode === 'vercel-blob'" class="h-3 w-3 text-emerald-500" />
-            <HardDrive v-else class="h-3 w-3 text-amber-500" />
-            <span>{{ storageMode === 'vercel-blob' ? 'Vercel Blob' : 'Local Cache' }} · {{ ttlHours }}h TTL</span>
-          </Badge>
-
-          <Button
-            variant="ghost"
-            size="icon"
-            class="h-8 w-8"
-            aria-label="Toggle color theme"
-            @click="toggleTheme"
-          >
-            <ClientOnly>
-              <Sun v-if="colorMode.value === 'dark'" class="h-4 w-4" />
-              <Moon v-else class="h-4 w-4" />
-              <template #fallback>
-                <Sun class="h-4 w-4" />
-              </template>
-            </ClientOnly>
-          </Button>
-        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          class="h-8 w-8"
+          aria-label="Toggle color theme"
+          @click="toggleTheme"
+        >
+          <ClientOnly>
+            <Sun v-if="colorMode.value === 'dark'" class="h-4 w-4" />
+            <Moon v-else class="h-4 w-4" />
+            <template #fallback>
+              <Sun class="h-4 w-4" />
+            </template>
+          </ClientOnly>
+        </Button>
       </div>
     </header>
 
-    <!-- Main Studio Workspace -->
+    <!-- Main Workspace -->
     <main class="container max-w-3xl space-y-8 py-10 sm:py-14">
       <!-- Hero Heading -->
-      <section class="space-y-3 text-center">
-        <div class="inline-flex items-center gap-2 rounded-full border bg-card px-3 py-1 text-xs text-muted-foreground shadow-sm">
-          <Sparkles class="h-3.5 w-3.5 text-primary" />
-          <span>Tagged MP3s with Cover Art · Cached for {{ ttlHours }} Hours</span>
-        </div>
+      <section class="space-y-2.5 text-center">
         <h1 class="text-3xl font-bold tracking-tight sm:text-4xl">
           YouTube &amp; SoundCloud to MP3
         </h1>
-        <p class="mx-auto max-w-lg text-sm text-muted-foreground sm:text-base">
-          Paste a track link below. Converted files include ID3 metadata &amp; artwork and stay cached on your subdomain for 24 hours.
+        <p class="mx-auto max-w-md text-sm text-muted-foreground sm:text-base">
+          Paste a track link below to convert and download high-quality MP3 audio.
         </p>
       </section>
 
@@ -437,7 +409,7 @@ onMounted(() => {
                 class="shrink-0 border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
               >
                 <Zap class="h-3 w-3" />
-                Cached · 0s wait
+                Instant
               </Badge>
             </template>
           </div>
@@ -488,7 +460,7 @@ onMounted(() => {
 
       <Separator />
 
-      <!-- Per-Browser 24-Hour Vault -->
+      <!-- Recent Downloads -->
       <ClientOnly>
         <VaultList
           :items="vaultItems"
@@ -500,13 +472,6 @@ onMounted(() => {
           @clear="clearVault"
         />
       </ClientOnly>
-
-      <!-- Architecture / Subdomain Footer -->
-      <footer class="border-t pt-6 text-center text-xs text-muted-foreground">
-        <p>
-          Powered by Nuxt + shadcn-vue · Audio transcoded via FFmpeg with ID3v2.3 cover art · Automatic 24-hour Vercel Blob expiration.
-        </p>
-      </footer>
     </main>
   </div>
 </template>
